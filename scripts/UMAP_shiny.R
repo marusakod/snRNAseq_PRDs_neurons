@@ -8,103 +8,102 @@ library(shinyWidgets)
 library(tidyverse)
 library(shinyjs)
 
-all_SCE_objects <- readRDS("all_SCE_objects.rds")
-NBH_noHashed_Seurat_combined <- readRDS("NBH_noHashed_Seurat_combined.rds")
-RML_noHashed_Seurat_combined <- readRDS("RML_noHashed_Seurat_combined.rds")  
-NBH_noHashed_Seurat_comb_filt <- readRDS("NBH_noHashed_Seurat_comb_filt.rds")
-RML6_noHashed_Seurat_comb_filt <- readRDS("RML6_noHashed_Seurat_comb_filt.rds")
+all_SCE_objects <- readRDS("all_SCE_objects.rds") # just for ensembl IDs
 
-# append Replicate column to metadata of nonhashed samples
-addReplicate_to_Seurat <- function(seurat){
-  # add metadata column assigning cells to replicate 1 or replicate 2
-  cells <- rownames(seurat@meta.data)
-  replicate_vec <- vector("character", length = length(cells))
-  replicate_vec[grepl("Replicate1.*", cells)] <- "Replicate 1"
-  replicate_vec[grepl("Replicate2.*", cells)] <- "Replicate 2"
+ensembl_symbol_table <- as.data.frame(rowData(all_SCE_objects$NBH_1_NoHashed)) %>% dplyr::select(ID, Symbol)
+
+# all samples merged seurat objects
+all_srat_Merged_filtered <- readRDS("all_srat_Merged_filtered2.rds")
+
+# all samples merged ambient corrected seurat objects
+all_srat_Merged_ambCorr_filtered <- readRDS("all_srat_Merged_ambCorr_filtered2.rds")
+
+# make a UMAP df 
+
+make_UMAP_df  <- function(srat){
+  umap_df <- as.data.frame(srat[["umap"]]@cell.embeddings)
+  umap_df2 <- cbind(umap_df, srat@meta.data)
   
-  rep_df <- data.frame(Replicate = replicate_vec)
-  rownames(rep_df) <- cells
+  # remove columns that start with pANN
+  to_remove <- colnames(umap_df2)[grepl("pANN_.*", colnames(umap_df2))]
+  umap_df2 <- umap_df2 %>% dplyr::select(-all_of(to_remove)) %>%
+    replace_na(list(nCount_HTO = 0, 
+                    nFeature_HTO = 0, 
+                    HTO_maxID = "noId", 
+                    HTO_secondID = "noId", 
+                    HTO_margin = 0, 
+                    HTO_classification = "noClass", 
+                    HTO_classification.global = "noClass", 
+                    hash.ID = "noId"))
+ 
+  umap_df3 <- umap_df2 %>% dplyr::filter(type == "Hashed")
   
-  s1 <- AddMetaData(seurat, metadata = rep_df)
-  s1
-}
-
-all_noHashed_Seurat_comb_filt <- sapply(list(NBH_noHashed = NBH_noHashed_Seurat_comb_filt, RML_noHashed = RML6_noHashed_Seurat_comb_filt),
-                                        FUN = addReplicate_to_Seurat, 
-                                        simplify = FALSE)
-
-
-all_Hashed_demultiplexed <- readRDS("all_Hashed_demultiplexed.rds")
-all_Hashed_demultiplexed_filt2x <- readRDS("all_Hashed_demultiplexed_filt2x.rds")
-
-# remove doublets and negatives from nonfiltered Hashed Seurat objects
-
-all_HTO_names <- rownames(all_Hashed_demultiplexed$RML6_Hashed[["HTO"]])
-
-# remove all negatives and doublets and assign cells to replicates 
-filter_dumux_seurat <- function(demux_seurat){
-  s1 <- subset(x = demux_seurat, subset = hash.ID %in% all_HTO_names)
-  
-  # add metadata column assigning cells to replicate 1 or replicate 2
-  singlets <- rownames(s1@meta.data)
-  singlets_hashIDs <- s1@meta.data$hash.ID
+  singlets_hashIDs <- umap_df3$hash.ID
   replicate_vec <- vector("character", length = length(singlets_hashIDs))
   replicate_vec[grepl(".*REP1", singlets_hashIDs)] <- "Replicate 1"
   replicate_vec[grepl(".*REP2", singlets_hashIDs)] <- "Replicate 2"
+  replicate_vec[grepl("Negative", singlets_hashIDs)] <- "Negative"
   
-  rep_df <- data.frame(Replicate = replicate_vec)
-  rownames(rep_df) <- singlets
+  Nonhashed_replicates <- umap_df2%>% dplyr::filter(type == "Nonhashed") %>% dplyr::select(Replicate) %>% flatten_chr()
+  all_replicate_vec <- c(Nonhashed_replicates, replicate_vec)
   
-  s1 <- AddMetaData(s1, metadata = rep_df)
-  s1
+  
+  umap_df2$Replicate2 <- all_replicate_vec
+  umap_df2 <- umap_df2 %>% mutate(cond_rep = paste(Replicate2, condition, sep = " "))
+  umap_df2$cond_rep <- factor(umap_df2$cond_rep, levels = c("Replicate 1 NBH", "Replicate 2 NBH", "Replicate 1 RML6", "Replicate 2 RML6",
+                                                            "Negative NBH", "Negative RML6"))
+  
+  umap_df2
 }
 
-all_Hashed_demultiplexed <- sapply(all_Hashed_demultiplexed, FUN = filter_dumux_seurat, simplify = FALSE)
+UMAP_df <- make_UMAP_df(all_srat_Merged_filtered)
+UMAP_df_ambCorr <- make_UMAP_df(all_srat_Merged_ambCorr_filtered)
 
 
 # gene Symbols for selectInputs
-all_genes <- rowData(all_SCE_objects$NBH_1_NoHashed)$Symbol
-all_genes_Hashed <- rowData(all_SCE_objects$NBH_Hashed)$Symbol
+all_genes <- rownames(GetAssayData(all_srat_Merged_filtered, slot = "data", assay = "SCT"))
+all_symbols <- ensembl_symbol_table %>% dplyr::filter(ID %in% all_genes) %>% dplyr::select(Symbol) %>% flatten_chr()
+all_genes_ambCorr <- rownames(GetAssayData(all_srat_Merged_ambCorr_filtered, slot = "data", assay = "SCT"))
+all_symbols_ambCorr <- ensembl_symbol_table %>% dplyr::filter(ID %in% all_genes_ambCorr) %>% dplyr::select(Symbol) %>% flatten_chr()
 
 # USER INTERFACE ==========================================================================
 ui <- fluidPage(sidebarLayout(
   sidebarPanel = sidebarPanel(width = 2, 
                               radioButtons(
                                 inputId = "pickSample",
-                                label = "Sample type",
-                                choices = c("Nonhashed", "Hashed"),
-                                selected = "Nonhashed"
-                               
+                                label = "Data",
+                                choices = c("Original", "Ambient corrected"),
+                                selected = "Original"
+                                
                               ),
-                              conditionalPanel("input.pickSample == 'Nonhashed'", 
-                              selectizeInput("geneSymbol",
-                                             label = "Select Gene Symbol", 
-                                             multiple = FALSE,
-                                             size = 20,
-                                             choices = NULL,
-                                             width = "200px",
-                                             options = list(
-                                               placeholder = 'eg. Agap2',
-                                               onInitialize = I('function() { this.setValue("");}')
-                                             ))),
-                              conditionalPanel("input.pickSample == 'Hashed'", 
-                                               selectizeInput("geneSymbolHashed",
+                              conditionalPanel("input.pickSample == 'Original'", 
+                                               selectizeInput("geneSymbol",
                                                               label = "Select Gene Symbol", 
                                                               multiple = FALSE,
                                                               size = 20,
+                                                              
                                                               choices = NULL,
                                                               width = "200px",
-                                                              options = list(
-                                                                placeholder = 'eg. Agap2',
-                                                                onInitialize = I('function() { this.setValue("");}')
-                                                              ))),
-                
-                              radioButtons("colorWhat", 
-                                                "Colour cells by:", 
-                                                choices = c("Normalized counts", "UMI counts (raw)")),
-                              radioButtons("replicatesDisp",
-                                           "Display replicates:",
-                                           choices = c("merged", "split")),
+                                                              # options = list(
+                                                              # placeholder = 'eg. Agap2',
+                                                              #   onInitialize = I('function() { this.setValue("");}')
+                                               )),
+                              conditionalPanel("input.pickSample == 'Ambient corrected'", 
+                                               selectizeInput("geneSymbol_ambCorr",
+                                                              label = "Select Gene Symbol", 
+                                                              multiple = FALSE,
+                                                              size = 20,
+                                                              
+                                                              choices = NULL,
+                                                              width = "200px",
+                                                              #options = list(
+                                                              #  placeholder = 'eg. Agap2',
+                                                              # onInitialize = I('function() { this.setValue("");}')
+                                               )),
+                              radioButtons("splitBy",
+                                           "Split by:",
+                                           choices = c("condition", "sample", "replicate"), 
+                                           selected = "condition"),
                               esquisse::colorPicker("colors",
                                                     choices = list(grey1 = "#EAECEE",
                                                                    grey2 = "#BFC9CA", 
@@ -139,18 +138,13 @@ ui <- fluidPage(sidebarLayout(
                                            min = 0,
                                            max = 1,
                                            step = 0.1, 
-                                           width = "200px"),
-                              downloadButton(outputId = "downloadNBH",
-                                           label = "Download NBH plot",
-                                           icon = icon("download")),
-                             downloadButton(outputId = "downloadRML",
-                                                        label = "Download RML plot",
-                                                        icon = icon("download"))),
+                                           width = "200px")),
   mainPanel = mainPanel(width = 10, 
-                        uiOutput("get_plot_NBH"), 
-                        uiOutput("get_plot_RML"))
+                        uiOutput("get_plot")
+  )
   
 ))
+
 
 
 # SERVER ======================================================================================================================
@@ -160,327 +154,126 @@ server <- function(input, output, session){
   updateSelectizeInput(session  = session,
                        inputId  = "geneSymbol",
                        server   = TRUE,
-                       choices  = all_genes,
-                       selected = character(0),
-                       options = list(
-                         placeholder = 'eg. Agap2',
-                         onInitialize = I('function() { this.setValue("");}')
-                       ))
+                       choices  = all_symbols,
+                       selected = "Gpnmb",
+                       #options = list(
+                        # placeholder = 'eg. Agap2',
+                         #onInitialize = I('function() { this.setValue("");}')
+                       )
   
   updateSelectizeInput(session  = session,
-                       inputId  = "geneSymbolHashed",
+                       inputId  = "geneSymbol_ambCorr",
                        server   = TRUE,
-                       choices  = all_genes_Hashed,
-                       selected = character(0),
-                       options = list(
-                         placeholder = 'eg. Agap2',
-                         onInitialize = I('function() { this.setValue("");}')
-                       ))
+                       choices  = all_symbols_ambCorr,
+                       selected = "Gpnmb",
+                      # options = list(
+                         #placeholder = 'eg. Agap2',
+                        # onInitialize = I('function() { this.setValue("");}')
+                       )
   
   observeEvent(input$pickSample, {
     shinyjs::reset("geneSymbol")
-    shinyjs::reset("geneSymbolHashed")
+    shinyjs::reset("geneSymbol_ambCorr")
   })
   
-  plot_width <- reactive({
-    if(input$replicatesDisp == "merged"){
-      w <- "700px"
+  plot_height <- reactive({
+    if(input$splitBy == "condition"){
+      h <- "1200px"
+    }else if(input$splitBy == "type"){
+      h <- "1200"
     }else{
-      w <- "1400px"
+    h <- "2200px"
     }
-    w
+    h
   })
   
-
-  Entry_variable <- reactiveVal()
   
-  observeEvent(input$geneSymbol, {
-    Entry_variable(input$geneSymbol)
-  }) # manual single gene selection (symbol) #
+  selected_gene <- reactive({
+    if(input$pickSample == "Original"){
+      gene <- input$geneSymbol
+    }else{
+      gene <- input$geneSymbol_ambCorr
+    }
+    gene
+  })
   
-  observeEvent(input$geneSymbolHashed, {
-    Entry_variable(input$geneSymbolHashed)
-  }) # manual single gene selection (Hashed symbol) 
-  
-  # get ensembl id for selected gene symbol
   ensembl <- reactive({
-    if(input$pickSample == "Nonhashed"){
-      data <- rowData(all_SCE_objects$NBH_1_NoHashed)
+    ensembl_symbol_table %>% dplyr::filter(Symbol == selected_gene()) %>% dplyr::select(ID) %>% flatten_chr()
+  })
+  
+  seurat <- reactive({
+    if(input$pickSample == "Original"){
+      seu <- all_srat_Merged_filtered
     }else{
-      data <- rowData(all_SCE_objects$NBH_Hashed)
+      seu <- all_srat_Merged_ambCorr_filtered
     }
-    
-    ensembl <- as.data.frame(data) %>% filter(Symbol == Entry_variable()) %>% dplyr::select(ID) %>% flatten_chr()
-    ensembl
+    seu
   })
   
   
-  # plot expression of a particular gene to a UMAP
-  make_UMAP_df <- function(ensembl, unfilt_seurat, filt_seurat){
-    # get normalized counts and raw counts from unfiltered seurat object
-    raw_counts <-  GetAssayData(unfilt_seurat, slot = "counts")[ensembl, ]
-    norm_counts <- GetAssayData(unfilt_seurat, slot = "data")[ensembl, ]
+  original_umap_df <- reactive({
+    if(input$pickSample == "Original"){
+      u <- UMAP_df
+    }else{
+      u <- UMAP_df_ambCorr
+    }
+    u
+  })
+  
+  umap_df_for_plot <- reactive({
+    norm_counts <- GetAssayData(seurat(), slot = "data", assay = "SCT")[ensembl(), ]
+    umap1 <- original_umap_df()
+    umap1$normCounts <- norm_counts
+    umap1
+  })
+  
+  
+
+  output$umap_plot <- renderPlot({
+    table <- umap_df_for_plot()
+    if(input$splitBy == "replicate"){
+      table <- table %>% dplyr::filter(Replicate2 != "Negative")
+    }
     
-    # append counts to UMAP dataframe
-    UMAP_df <- as.data.frame(filt_seurat[["umap"]]@cell.embeddings)
-    UMAP_df$replicate <-  filt_seurat@meta.data$Replicate
-    UMAP_df$raw_counts <- raw_counts
-    UMAP_df$norm_counts <- norm_counts
-    
-    UMAP_df
-  }
-
-  
-NBH_filt_Seurat <- reactive({
-  if(input$pickSample == "Nonhashed"){
-    x <- all_noHashed_Seurat_comb_filt$NBH_noHashed
-  }else{
-    x <- all_Hashed_demultiplexed_filt2x$NBH_Hashed
-  }
-  x
-})
-
-RML_filt_Seurat <- reactive({
-  if(input$pickSample == "Nonhashed"){
-    x <- all_noHashed_Seurat_comb_filt$RML_noHashed
-  }else{
-    x <- all_Hashed_demultiplexed_filt2x$RML6_Hashed
-  }
-  x
-})
-
-NBH_unfilt_seurat <- reactive({
-  if(input$pickSample == "Nonhashed"){
-    x <- NBH_noHashed_Seurat_combined
-  }else{
-    x <- all_Hashed_demultiplexed$NBH_Hashed
-  }
-  x
-  
-})
-
-RML_unfilt_seurat <- reactive({
-  if(input$pickSample == "Nonhashed"){
-    x <- RML_noHashed_Seurat_combined
-  }else{
-    x <- all_Hashed_demultiplexed$RML6_Hashed
-  }
-  x
-})
-
-NBH_UMAP_df <- reactive({
-  df <- make_UMAP_df(ensembl = ensembl(), 
-                     unfilt_seurat = NBH_unfilt_seurat(), 
-                     filt_seurat = NBH_filt_Seurat())
-  
-  # if Hashed samples are to be displayed add hash ID to UMAP_df
-  if(input$pickSample == "Hashed"){
-    df$hashID <- NBH_filt_Seurat()@meta.data$hash.ID
-    return(df)
-  }else{
-    return(df)
-  }
-})
-
-RML_UMAP_df <- reactive({
-  df <- make_UMAP_df(ensembl = ensembl(), 
-                     unfilt_seurat = RML_unfilt_seurat(), 
-                     filt_seurat = RML_filt_Seurat())
-  
-  if(input$pickSample == "Hashed"){
-    df$hashID <- RML_filt_Seurat()@meta.data$hash.ID
-    return(df)
-  }else{
-    return(df)
-  }
-})
-
-# variable determining what should be colored 
-inColor <- reactive({
-  if(input$colorWhat == "Normalized counts"){
-    x <- "norm_counts"
-  }else{
-    x <- "raw_counts"
-  }
-  x
-})
-
-
-
-make_UMAP <- function(UMAP_df, p_size, trans, which_color, Title, cols, Subtit, legendName){
-    
-    p <- ggplot(UMAP_df, aes(x = UMAP_1, y = UMAP_2, color = get(which_color))) +
-      geom_point(alpha = trans, size = p_size) +
+    p <- ggplot(table, aes(x = UMAP_1, y = UMAP_2, color = normCounts)) +
+      geom_point(alpha = input$alpha, size = input$pointSize) +
       theme_light() +
-      labs(x = "UMAP 1", y = "UMAP 2", title = Title, subtitle = Subtit, color = legendName) +
-      theme(panel.grid.major = element_blank(),
-            strip.text = element_text(size = 16, colour = "black"),
-            axis.text = element_text(size = 12), 
-            axis.title = element_text(size = 14), 
-            legend.text = element_text(size = 12), 
-            legend.title = element_text(size = 14), 
-            plot.title = element_text(size = 18),
-            plot.subtitle = element_text(size = 16), 
-            panel.grid.minor = element_blank()) +
-      scale_color_gradientn(colours = cols)
+      labs(x = "UMAP 1", y = "UMAP 2", title = paste("Selected gene:", selected_gene(), sep = " "), color = "Normalized \ncounts")
+    
+  if(input$splitBy == "condition"){
+    p <- p + facet_grid(type~condition, scales = "free")
+  }else if(input$splitBy == "sample"){
+    p <- p + facet_grid(Replicate~condition, scales = "free")
+  }else{
+    p <- p + facet_grid(cond_rep~type, scales ="free")
+  }
+    
+   p <-  p + theme(panel.grid.major = element_blank(), 
+              panel.grid.minor = element_blank(), 
+              strip.text = element_text(size = 16, color = "black"), 
+              axis.text = element_text(size = 12), 
+              axis.title = element_text(size = 14), 
+              legend.title = element_text(size = 14), 
+              legend.text = element_text(size = 14), 
+              plot.title = element_text(size = 18)
+              ) +
+      
+      scale_color_gradientn(colours = input$colors)
     
     p
-
-}
-
-empty_umap <- ggplot(data.frame(x = c(1,2,3), y = c(1,2,3)), aes(x = x, y = y)) +
-              geom_blank() +
-              labs(x = "UMAP 1", y = "UMAP 2") +
-              theme_light() +
-  theme(panel.grid.major = element_blank(),
-        axis.text = element_text(size = 12), 
-        axis.title = element_text(size = 14),
-        panel.grid.minor = element_blank())
-
-#vals <- reactiveValues()
-
-NBH_UMAP <- reactive({
-  if(!ensembl() %in% rownames(GetAssayData(NBH_filt_Seurat(), slot = "counts"))){
-    note <- "This gene has been FILTERED OUT!!!"
-  }else{
-    note <- ""
-  }
-  
-  if(input$pickSample == "Nonhashed"){
-    sub <- input$geneSymbol
-  }else{
-    sub <- input$geneSymbolHashed
-  }
-  
-  p <-  make_UMAP(UMAP_df = NBH_UMAP_df(),
-                  p_size = input$pointSize,
-                  trans = input$alpha,
-                  which_color = inColor(),
-                  Title = "NBH",
-                  legendName = input$colorWhat, 
-                  cols = input$colors, 
-                  Subtit = paste(sub, note, sep = " "))
-  
-  if(input$replicatesDisp == "split"){
-    p <- p + facet_wrap(~replicate)
-    #vals$NBH <- p
-    return(p)
-  }else{
-    #vals$NBH <- p
-    return(p)
-  }
-})
-
-
-RML_UMAP <- reactive({
-  if(!ensembl() %in% rownames(GetAssayData(RML_filt_Seurat(), slot = "counts"))){
-  note <- "This gene has been FILTERED OUT!!!"
-}else{
-  note <- ""
-}
-  
-  if(input$pickSample == "Nonhashed"){
-    sub <- input$geneSymbol
-  }else{
-    sub <- input$geneSymbolHashed
-  }
-
-p <-  make_UMAP(UMAP_df = RML_UMAP_df(),
-                p_size = input$pointSize,
-                trans = input$alpha,
-                which_color = inColor(),
-                Title = "RML",
-                legendName = input$colorWhat, 
-                cols = input$colors,
-                Subtit = paste(sub, note, sep = " "))
-
-if(input$replicatesDisp == "split"){
-  p <- p + facet_wrap(~replicate)
-  #vals$RML <- p
-  return(p)
-}else{
-  #vals$RML <- p 
-  return(p)
-}
-
-})
-
-
-
-
-output$NBH <- renderPlot({
-  
-  if(input$pickSample == "Nonhashed"){
-    if(length(ensembl()) == 0){
-      return(empty_umap)
-    }else{
-      return(NBH_UMAP())
-    }
-  }else{
-  if(length(ensembl()) == 0){
-   return(empty_umap)
-  }else{
-    return(NBH_UMAP())
-  }
-  }
-})
-
-
-
-output$RML <- renderPlot({
-  
-  if(input$pickSample == "Nonhashed"){
-    if(length(ensembl()) == 0){
-      return(empty_umap)
-    }else{
-      return(RML_UMAP())
-    }
-  }else{
-    if(length(ensembl()) == 0){
-      return(empty_umap)
-    }else{
-      return(RML_UMAP())
-    } 
-  }
-  })
-
- # output$downloadNBH <- downloadHandler(
-  #  filename = function(){paste(input$geneSymbol, "_NBH_UMAP", '.png', sep = "")},
-    
-  #  content = function(file){
-  #    png(file, width = as.numeric(gsub("px", "", plot_width())), height = 700, units = "px")
-    #  print(vals$NBH)
-   #   dev.off()
-   # }
- # )
-  
-  
-  #output$downloadRML <- downloadHandler(
-   # filename = function(){paste(input$geneSymbol, "_RML_UMAP", '.png', sep = "")},
-    
-   # content = function(file){
-    #  png(file, width = as.numeric(gsub("px", "", plot_width())), height = 700, units = "px")
-  #    print(vals$RML)
-  #    dev.off()
-  #  }
-#  )
-  
-
-
-output$get_plot_NBH <- renderUI({
-    
-    plotOutput("NBH", width = plot_width(), height = "700px")
-    
     
   })
+
+
+
+output$get_plot <- renderUI({
   
-output$get_plot_RML <- renderUI({
-    
-    plotOutput("RML", width = plot_width(), height = "700px")
-    
-  })
+  plotOutput("umap_plot", height = plot_height())
   
+})
+
 }
+
 
 shinyApp(ui = ui, server = server)
 
