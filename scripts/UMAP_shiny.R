@@ -16,7 +16,7 @@ ensembl_symbol_table <- as.data.frame(rowData(all_SCE_objects$NBH_1_NoHashed)) %
 all_srat_Merged_filtered <- readRDS("all_srat_Merged_filtered2.rds")
 
 # all samples merged ambient corrected seurat objects
-all_srat_Merged_ambCorr_filtered <- readRDS("all_srat_Merged_ambCorr_filtered2.rds")
+all_srat_Merged_ambCorr_filtered <- readRDS("/Users/marusa/Documents/snRNAseq_PRDs_neurons/all_srat_Merged_ambCorr_filtered2.rds")
 
 # make a UMAP df 
 
@@ -67,7 +67,9 @@ all_genes_ambCorr <- rownames(GetAssayData(all_srat_Merged_ambCorr_filtered, slo
 all_symbols_ambCorr <- ensembl_symbol_table %>% dplyr::filter(ID %in% all_genes_ambCorr) %>% dplyr::select(Symbol) %>% flatten_chr()
 
 # USER INTERFACE ==========================================================================
-ui <- fluidPage(sidebarLayout(
+ui <- fluidPage(tabsetPanel(
+  tabPanel("Gene search", 
+  sidebarLayout(
   sidebarPanel = sidebarPanel(width = 2, 
                               radioButtons(
                                 inputId = "pickSample",
@@ -102,7 +104,7 @@ ui <- fluidPage(sidebarLayout(
                                                )),
                               radioButtons("splitBy",
                                            "Split by:",
-                                           choices = c("condition", "sample", "replicate"), 
+                                           choices = c("condition", "condition and type",  "sample", "replicate"), 
                                            selected = "condition"),
                               esquisse::colorPicker("colors",
                                                     choices = list(grey1 = "#EAECEE",
@@ -141,7 +143,49 @@ ui <- fluidPage(sidebarLayout(
                                            width = "200px")),
   mainPanel = mainPanel(width = 10, 
                         uiOutput("get_plot")
-  )
+  ))), 
+  tabPanel("Explore Metadata", 
+           sidebarLayout(
+             sidebarPanel(width = 2, 
+                          selectInput("metadata", 
+                                      label = "Select metadata column", 
+                                      choices = c(
+                                                  "Clusters (resolution 0.1)", 
+                                                  "Clusters (resolution 0.2)", 
+                                                  "Clusters (resolution 0.3)", 
+                                                  "Clusters (resolution 0.4)", 
+                                                  "Clusters (resolution 0.5)", 
+                                                  "Ribosomal protein genes content", 
+                                                  "Mouse RNAseq reference classification", 
+                                                  "Chen et al. classification", 
+                                                  "Campbell et al. classification"
+                                                  ) , 
+                                      selected = "Clusters (resolution 0.1)",
+                                      multiple = FALSE, 
+                                      width = "200px"
+                                
+                                      ), 
+                          radioButtons("splitBymeta",
+                                      "Split by:",
+                                      choices = c("condition", "condition and type", "sample", "replicate"),
+                                      selected = "condition"), 
+                          numericInput("pointSizeMeta", 
+                                       label = "Select point size", 
+                                       value = 1,
+                                       min = 0.1, 
+                                       max = 10, 
+                                       step = 0.1, 
+                                       width = "200px"),
+                          numericInput("alphaMeta",
+                                       label = "Select point transparency", 
+                                       value = 0.5, 
+                                       min = 0,
+                                       max = 1,
+                                       step = 0.1, 
+                                       width = "200px")
+                          ), 
+             mainPanel()
+           ))
   
 ))
 
@@ -155,21 +199,21 @@ server <- function(input, output, session){
                        inputId  = "geneSymbol",
                        server   = TRUE,
                        choices  = all_symbols,
-                       selected = "Gpnmb",
-                       #options = list(
-                        # placeholder = 'eg. Agap2',
-                         #onInitialize = I('function() { this.setValue("");}')
-                       )
+                       selected = character(0),
+                       options = list(
+                        placeholder = 'eg. Agap2',
+                        onInitialize = I('function() { this.setValue("");}')
+                       ))
   
   updateSelectizeInput(session  = session,
                        inputId  = "geneSymbol_ambCorr",
                        server   = TRUE,
                        choices  = all_symbols_ambCorr,
-                       selected = "Gpnmb",
-                      # options = list(
-                         #placeholder = 'eg. Agap2',
-                        # onInitialize = I('function() { this.setValue("");}')
-                       )
+                       selected = character(0),
+                      options = list(
+                        placeholder = 'eg. Agap2',
+                      onInitialize = I('function() { this.setValue("");}')
+                       ))
   
   observeEvent(input$pickSample, {
     shinyjs::reset("geneSymbol")
@@ -177,13 +221,21 @@ server <- function(input, output, session){
   })
   
   plot_height <- reactive({
+    
+    if(selected_gene() == ""){
+      h <- "800px"
+    }else{
     if(input$splitBy == "condition"){
+      h <- "800px"
+    }else if(input$splitBy == "condition and type"){
       h <- "1200px"
     }else if(input$splitBy == "type"){
-      h <- "1200"
+      h <- "1200px"
     }else{
     h <- "2200px"
     }
+    }
+    
     h
   })
   
@@ -197,6 +249,7 @@ server <- function(input, output, session){
     gene
   })
   
+
   ensembl <- reactive({
     ensembl_symbol_table %>% dplyr::filter(Symbol == selected_gene()) %>% dplyr::select(ID) %>% flatten_chr()
   })
@@ -221,9 +274,17 @@ server <- function(input, output, session){
   })
   
   umap_df_for_plot <- reactive({
+    
+    if(selected_gene() == ""){
+     umap1 <- data.frame(matrix(ncol = 0, nrow = 0))
+     
+    }else{
+
     norm_counts <- GetAssayData(seurat(), slot = "data", assay = "SCT")[ensembl(), ]
     umap1 <- original_umap_df()
     umap1$normCounts <- norm_counts
+    }
+    
     umap1
   })
   
@@ -231,6 +292,18 @@ server <- function(input, output, session){
 
   output$umap_plot <- renderPlot({
     table <- umap_df_for_plot()
+    
+    if(selected_gene() == ""){ # if no genes are selected print an empty umap
+      p <- ggplot(data.frame(x = c(1,2,3), y = c(1,2,3)), aes(x = x, y = y)) +
+        theme_light() +
+        labs(x = "UMAP 1", y = "UMAP 2") +
+            theme(axis.title = element_text(size = 14),
+              panel.grid.minor = element_blank(), 
+              panel.grid.major = element_blank())
+    
+      
+    }else{
+      
     if(input$splitBy == "replicate"){
       table <- table %>% dplyr::filter(Replicate2 != "Negative")
     }
@@ -241,12 +314,16 @@ server <- function(input, output, session){
       labs(x = "UMAP 1", y = "UMAP 2", title = paste("Selected gene:", selected_gene(), sep = " "), color = "Normalized \ncounts")
     
   if(input$splitBy == "condition"){
+    p <- p + facet_wrap(~condition, scales = "free")
+  }else if(input$splitBy == "condition and type"){
     p <- p + facet_grid(type~condition, scales = "free")
   }else if(input$splitBy == "sample"){
     p <- p + facet_grid(Replicate~condition, scales = "free")
   }else{
     p <- p + facet_grid(cond_rep~type, scales ="free")
   }
+    
+    
     
    p <-  p + theme(panel.grid.major = element_blank(), 
               panel.grid.minor = element_blank(), 
@@ -260,7 +337,11 @@ server <- function(input, output, session){
       
       scale_color_gradientn(colours = input$colors)
     
-    p
+    
+    
+    }
+    
+    return(p)
     
   })
 
